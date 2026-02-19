@@ -22,13 +22,21 @@
     blackmatter-shell,
     blackmatter-nvim,
   }: let
-    # Profiles are Linux-only — OCI containers always run on Linux
+    # OCI images are always Linux; release scripts run on any system
     linuxSystems = ["x86_64-linux" "aarch64-linux"];
+    allSystems = linuxSystems ++ ["x86_64-darwin" "aarch64-darwin"];
     forLinux = f: nixpkgs.lib.genAttrs linuxSystems (system: f system nixpkgs.legacyPackages.${system});
+    forAll = f: nixpkgs.lib.genAttrs allSystems (system: f system nixpkgs.legacyPackages.${system});
 
-    mkProfile = name: system: pkgs:
+    # Map host system → container target (darwin hosts build linux images)
+    containerSystem = system: {
+      "aarch64-darwin" = "aarch64-linux";
+      "x86_64-darwin" = "x86_64-linux";
+    }.${system} or system;
+
+    mkProfile = name: system:
       import ./profiles/${name} {
-        inherit pkgs;
+        pkgs = nixpkgs.legacyPackages.${system};
         lib = nixpkgs.lib;
         blzsh = blackmatter-shell.packages.${system}.blzsh;
       };
@@ -39,17 +47,17 @@
       k8s = "ghcr.io/pleme-io/blackmatter-k8s";
     };
 
-    # Release script: skopeo copy from nix store tar → GHCR (no docker daemon needed)
-    mkReleaseScript = system: pkgs: name: let
-      image = mkProfile name system pkgs;
+    # Release script: host tools (skopeo/git) from hostPkgs, image built for linux
+    mkReleaseScript = hostPkgs: targetSystem: name: let
+      image = mkProfile name targetSystem;
       registry = profileRegistry.${name};
     in
-      pkgs.writeShellScript "release-${name}" ''
+      hostPkgs.writeShellScript "release-${name}" ''
         set -euo pipefail
-        SHORT_SHA=$(${pkgs.git}/bin/git rev-parse --short HEAD)
+        SHORT_SHA=$(${hostPkgs.git}/bin/git rev-parse --short HEAD)
         echo "==> Releasing ${registry} (latest + $SHORT_SHA)"
-        ${pkgs.skopeo}/bin/skopeo copy docker-archive:${image} docker://${registry}:latest
-        ${pkgs.skopeo}/bin/skopeo copy docker-archive:${image} docker://${registry}:$SHORT_SHA
+        ${hostPkgs.skopeo}/bin/skopeo copy docker-archive:${image} docker://${registry}:latest
+        ${hostPkgs.skopeo}/bin/skopeo copy docker-archive:${image} docker://${registry}:$SHORT_SHA
         echo "==> Done: ${registry}"
       '';
   in {
@@ -57,30 +65,33 @@
     # Build:  nix build .#packages.x86_64-linux.debug
     # Run:    docker load < result && docker run --rm -it ghcr.io/pleme-io/blackmatter-debug:latest
     packages = forLinux (system: pkgs: {
-      default = mkProfile "debug" system pkgs;
-      debug = mkProfile "debug" system pkgs;
-      k8s = mkProfile "k8s" system pkgs;
+      default = mkProfile "debug" system;
+      debug = mkProfile "debug" system;
+      k8s = mkProfile "k8s" system;
     });
 
     # Release apps: build image + push to GHCR
+    # Runs on any system (macOS builds linux images via remote builder)
     # Usage: nix run .#release          (all profiles)
     #        nix run .#release:debug    (debug only)
     #        nix run .#release:k8s      (k8s only)
-    apps = forLinux (system: pkgs: {
+    apps = forAll (system: pkgs: let
+      target = containerSystem system;
+    in {
       "release:debug" = {
         type = "app";
-        program = toString (mkReleaseScript system pkgs "debug");
+        program = toString (mkReleaseScript pkgs target "debug");
       };
       "release:k8s" = {
         type = "app";
-        program = toString (mkReleaseScript system pkgs "k8s");
+        program = toString (mkReleaseScript pkgs target "k8s");
       };
       release = {
         type = "app";
         program = toString (pkgs.writeShellScript "release-all" ''
           set -euo pipefail
-          ${mkReleaseScript system pkgs "debug"}
-          ${mkReleaseScript system pkgs "k8s"}
+          ${mkReleaseScript pkgs target "debug"}
+          ${mkReleaseScript pkgs target "k8s"}
         '');
       };
     });
