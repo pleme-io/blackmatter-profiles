@@ -1,0 +1,72 @@
+{
+  "nodes": {
+    "blackmatter-nvim": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1771506579,
+        "narHash": "sha256-6Zu/i2UhrinZ4gdaFj4UD7jjER7bhyZ39ROWKJphctw=",
+        "owner": "pleme-io",
+        "repo": "blackmatter-nvim",
+        "rev": "b79f8a5b67411b880f992a18244073407c6cd734",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pleme-io",
+        "repo": "blackmatter-nvim",
+        "type": "github"
+      }
+    },
+    "blackmatter-shell": {
+      "inputs": {
+        "blackmatter-nvim": [
+          "blackmatter-nvim"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1771518559,
+        "narHash": "sha256-M27Gzc6atSKZAH037MDFt/oAXucLZdhx2j0eCh2UjRs=",
+        "owner": "pleme-io",
+        "repo": "blackmatter-shell",
+        "rev": "bd0228ae6027720e47ae0d873d9ec794a7fd25e6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pleme-io",
+        "repo": "blackmatter-shell",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1770562336,
+        "narHash": "sha256-ub1gpAONMFsT/GU2hV6ZWJjur8rJ6kKxdm9IlCT0j84=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "d6c71932130818840fc8fe9509cf50be8c64634f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "d6c71932130818840fc8fe9509cf50be8c64634f",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "blackmatter-nvim": "blackmatter-nvim",
+        "blackmatter-shell": "blackmatter-shell",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
