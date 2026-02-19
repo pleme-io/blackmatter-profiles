@@ -2,7 +2,7 @@
   description = "Blackmatter Profiles - curated shell environments as OCI container images";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/d6c71932130818840fc8fe9509cf50be8c64634f";
 
     blackmatter-nvim = {
       url = "github:pleme-io/blackmatter-nvim";
