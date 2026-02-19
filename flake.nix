@@ -17,10 +17,9 @@
   };
 
   outputs = {
-    self,
     nixpkgs,
     blackmatter-shell,
-    blackmatter-nvim,
+    ...
   }: let
     # OCI images are always Linux; release scripts run on any system
     linuxSystems = ["x86_64-linux" "aarch64-linux"];
@@ -29,10 +28,13 @@
     forAll = f: nixpkgs.lib.genAttrs allSystems (system: f system nixpkgs.legacyPackages.${system});
 
     # Map host system → container target (darwin hosts build linux images)
-    containerSystem = system: {
-      "aarch64-darwin" = "aarch64-linux";
-      "x86_64-darwin" = "x86_64-linux";
-    }.${system} or system;
+    containerSystem = system:
+      {
+        "aarch64-darwin" = "aarch64-linux";
+        "x86_64-darwin" = "x86_64-linux";
+      }.${
+        system
+      } or system;
 
     mkProfile = name: system:
       import ./profiles/${name} {
