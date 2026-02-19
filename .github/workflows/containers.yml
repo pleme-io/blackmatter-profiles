@@ -1,0 +1,57 @@
+name: Build and push container images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - name: debug
+            image: ghcr.io/pleme-io/blackmatter-debug
+          - name: k8s
+            image: ghcr.io/pleme-io/blackmatter-k8s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Set up Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build ${{ matrix.profile.name }} profile
+        run: nix build .#packages.x86_64-linux.${{ matrix.profile.name }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push ${{ matrix.profile.name }}
+        run: |
+          docker load < result
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          docker tag ${{ matrix.profile.image }}:latest \
+                     ${{ matrix.profile.image }}:${SHORT_SHA}
+          docker push ${{ matrix.profile.image }}:latest
+          docker push ${{ matrix.profile.image }}:${SHORT_SHA}
+
+      - name: Summary
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "### ${{ matrix.profile.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ matrix.profile.image }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ matrix.profile.image }}:${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
