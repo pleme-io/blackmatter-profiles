@@ -32,6 +32,26 @@
         lib = nixpkgs.lib;
         blzsh = blackmatter-shell.packages.${system}.blzsh;
       };
+
+    # Registry names for each profile
+    profileRegistry = {
+      debug = "ghcr.io/pleme-io/blackmatter-debug";
+      k8s = "ghcr.io/pleme-io/blackmatter-k8s";
+    };
+
+    # Release script: skopeo copy from nix store tar → GHCR (no docker daemon needed)
+    mkReleaseScript = system: pkgs: name: let
+      image = mkProfile name system pkgs;
+      registry = profileRegistry.${name};
+    in
+      pkgs.writeShellScript "release-${name}" ''
+        set -euo pipefail
+        SHORT_SHA=$(${pkgs.git}/bin/git rev-parse --short HEAD)
+        echo "==> Releasing ${registry} (latest + $SHORT_SHA)"
+        ${pkgs.skopeo}/bin/skopeo copy docker-archive:${image} docker://${registry}:latest
+        ${pkgs.skopeo}/bin/skopeo copy docker-archive:${image} docker://${registry}:$SHORT_SHA
+        echo "==> Done: ${registry}"
+      '';
   in {
     # Each profile is exposed as packages.<system>.<name>
     # Build:  nix build .#packages.x86_64-linux.debug
@@ -40,6 +60,29 @@
       default = mkProfile "debug" system pkgs;
       debug = mkProfile "debug" system pkgs;
       k8s = mkProfile "k8s" system pkgs;
+    });
+
+    # Release apps: build image + push to GHCR
+    # Usage: nix run .#release          (all profiles)
+    #        nix run .#release:debug    (debug only)
+    #        nix run .#release:k8s      (k8s only)
+    apps = forLinux (system: pkgs: {
+      "release:debug" = {
+        type = "app";
+        program = toString (mkReleaseScript system pkgs "debug");
+      };
+      "release:k8s" = {
+        type = "app";
+        program = toString (mkReleaseScript system pkgs "k8s");
+      };
+      release = {
+        type = "app";
+        program = toString (pkgs.writeShellScript "release-all" ''
+          set -euo pipefail
+          ${mkReleaseScript system pkgs "debug"}
+          ${mkReleaseScript system pkgs "k8s"}
+        '');
+      };
     });
   };
 }
