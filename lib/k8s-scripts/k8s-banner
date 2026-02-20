@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# k8s-banner — startup banner showing pod/ns/node/services/api/dns status
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+ok="${GREEN}ok${RESET}"
+fail="${RED}fail${RESET}"
+na="${YELLOW}n/a${RESET}"
+
+# --- Identity ---
+pod_name="${POD_NAME:-unknown}"
+pod_namespace="${POD_NAMESPACE:-}"
+node_name="${NODE_NAME:-unknown}"
+pod_ip="${POD_IP:-unknown}"
+
+SA_DIR="/var/run/secrets/kubernetes.io/serviceaccount"
+if [[ -z "$pod_namespace" && -f "${SA_DIR}/namespace" ]]; then
+  pod_namespace="$(cat "${SA_DIR}/namespace")"
+fi
+pod_namespace="${pod_namespace:-unknown}"
+
+echo -e "${BOLD}${CYAN}  blackmatter-k8s${RESET}"
+echo -e "${DIM}  Kubernetes debug environment${RESET}"
+echo ""
+
+echo -e "  ${BOLD}Pod:${RESET}        ${pod_name}"
+echo -e "  ${BOLD}Namespace:${RESET}  ${pod_namespace}"
+echo -e "  ${BOLD}Node:${RESET}       ${node_name}"
+echo -e "  ${BOLD}Pod IP:${RESET}     ${pod_ip}"
+echo ""
+
+# --- Checks ---
+echo -e "  ${BOLD}Checks:${RESET}"
+
+# DNS
+if dig +short +time=2 +tries=1 kubernetes.default.svc.cluster.local &>/dev/null; then
+  echo -e "    DNS        ${ok}"
+else
+  echo -e "    DNS        ${fail}"
+fi
+
+# API Server
+api_host="${KUBERNETES_SERVICE_HOST:-}"
+api_port="${KUBERNETES_SERVICE_PORT:-443}"
+if [[ -n "$api_host" ]]; then
+  if nc -z -w 2 "$api_host" "$api_port" 2>/dev/null; then
+    echo -e "    API        ${ok}  ${DIM}(${api_host}:${api_port})${RESET}"
+  else
+    echo -e "    API        ${fail}  ${DIM}(${api_host}:${api_port})${RESET}"
+  fi
+else
+  echo -e "    API        ${na}  ${DIM}(KUBERNETES_SERVICE_HOST not set)${RESET}"
+fi
+
+# Service Account
+if [[ -f "${SA_DIR}/token" ]]; then
+  echo -e "    SA Token   ${ok}"
+else
+  echo -e "    SA Token   ${na}"
+fi
+
+# --- Discovered Services ---
+svc_count=0
+while IFS='=' read -r key _; do
+  if [[ "$key" == *_SERVICE_HOST && "$key" != "KUBERNETES_SERVICE_HOST" ]]; then
+    svc_count=$((svc_count + 1))
+  fi
+done < <(env)
+
+echo ""
+if [[ "$svc_count" -gt 0 ]]; then
+  echo -e "  ${BOLD}Services:${RESET}   ${svc_count} discovered ${DIM}(run 'kservices' for details)${RESET}"
+else
+  echo -e "  ${BOLD}Services:${RESET}   ${DIM}none discovered${RESET}"
+fi
+
+# --- Quick tool summary ---
+echo ""
+echo -e "  ${BOLD}Tools:${RESET}      ${DIM}kdiag kcheck kservices kenv${RESET}"
+echo -e "  ${BOLD}Packages:${RESET}   ${DIM}kubectl helm flux k9s stern dig nmap tcpdump strace psql${RESET}"
+echo ""

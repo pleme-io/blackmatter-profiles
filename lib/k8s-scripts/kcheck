@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# kcheck — test connectivity to a specific Kubernetes service
+set -euo pipefail
+
+JSON=false
+SERVICE=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --json) JSON=true ;;
+    -h|--help)
+      echo "Usage: kcheck <service-name|host:port> [--json]"
+      echo ""
+      echo "Test connectivity to a discovered Kubernetes service or arbitrary host:port."
+      echo "Runs DNS, TCP, and HTTP probes with timeouts."
+      echo ""
+      echo "Examples:"
+      echo "  kcheck redis"
+      echo "  kcheck my-service --json"
+      echo "  kcheck 10.43.0.100:5432 --json"
+      echo ""
+      echo "Exit codes: 0=reachable, 1=unreachable, 2=service not found"
+      exit 0
+      ;;
+    *)
+      if [[ -z "$SERVICE" ]]; then
+        SERVICE="$arg"
+      else
+        echo "Unknown option: $arg" >&2; exit 1
+      fi
+      ;;
+  esac
+done
+
+if [[ -z "$SERVICE" ]]; then
+  echo "Error: service name or host:port required" >&2
+  echo "Usage: kcheck <service-name|host:port> [--json]" >&2
+  exit 1
+fi
+
+host=""
+port=""
+source_type=""
+
+# Check if it's a host:port pair
+if [[ "$SERVICE" == *:* ]]; then
+  host="${SERVICE%%:*}"
+  port="${SERVICE#*:}"
+  source_type="direct"
+else
+  # Look up from environment variables
+  # Convert service name to env var format (lowercase-dashes → UPPERCASE_UNDERSCORES)
+  env_prefix="$(echo "$SERVICE" | tr '[:lower:]-' '[:upper:]_')"
+  host_var="${env_prefix}_SERVICE_HOST"
+  port_var="${env_prefix}_SERVICE_PORT"
+
+  host="${!host_var:-}"
+  port="${!port_var:-}"
+  source_type="env"
+
+  # If not found, try DNS resolution (service.namespace.svc.cluster.local)
+  if [[ -z "$host" ]]; then
+    ns="${POD_NAMESPACE:-}"
+    if [[ -z "$ns" ]] && [[ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ]]; then
+      ns="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
+    fi
+
+    for fqdn in "${SERVICE}" "${SERVICE}.${ns:-default}.svc.cluster.local" "${SERVICE}.${ns:-default}"; do
+      if resolved="$(dig +short +time=2 +tries=1 "$fqdn" 2>/dev/null)" && [[ -n "$resolved" ]]; then
+        host="$(echo "$resolved" | head -1)"
+        source_type="dns:${fqdn}"
+        break
+      fi
+    done
+
+    if [[ -z "$host" ]]; then
+      if "$JSON"; then
+        jq -n --arg svc "$SERVICE" '{service: $svc, found: false, error: "Service not found in env vars or DNS"}'
+      else
+        echo "Error: service '$SERVICE' not found in environment variables or DNS" >&2
+      fi
+      exit 2
+    fi
+  fi
+fi
+
+# --- DNS check ---
+dns_ok=false
+dns_addresses=()
+if resolved="$(dig +short +time=2 +tries=1 "$host" 2>/dev/null)" && [[ -n "$resolved" ]]; then
+  dns_ok=true
+  while IFS= read -r addr; do
+    [[ -n "$addr" ]] && dns_addresses+=("$addr")
+  done <<< "$resolved"
+fi
+
+# --- TCP check ---
+tcp_ok=false
+tcp_latency=""
+if [[ -n "$port" ]]; then
+  start_ns="$(date +%s%N)"
+  if nc -z -w 3 "$host" "$port" 2>/dev/null; then
+    tcp_ok=true
+    end_ns="$(date +%s%N)"
+    elapsed_ms="$(( (end_ns - start_ns) / 1000000 ))"
+    tcp_latency="${elapsed_ms}ms"
+  fi
+fi
+
+# --- HTTP probe (try common health endpoints if TCP succeeded) ---
+http_status=""
+http_url=""
+if "$tcp_ok" && [[ -n "$port" ]]; then
+  for path in "/healthz" "/health" "/ready" "/readyz" "/"; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://${host}:${port}${path}" 2>/dev/null || echo "000")"
+    if [[ "$code" != "000" ]]; then
+      http_status="$code"
+      http_url="http://${host}:${port}${path}"
+      break
+    fi
+  done
+fi
+
+# --- Output ---
+overall="reachable"
+if ! "$tcp_ok" && [[ -n "$port" ]]; then overall="unreachable"; fi
+if [[ -z "$port" ]] && ! "$dns_ok"; then overall="unreachable"; fi
+if [[ -z "$port" ]] && "$dns_ok"; then overall="dns_only"; fi
+
+if "$JSON"; then
+  jq -n \
+    --arg svc "$SERVICE" \
+    --arg host "$host" \
+    --arg port "${port:-null}" \
+    --arg source "$source_type" \
+    --argjson dns_ok "$dns_ok" \
+    --argjson dns_addrs "$(printf '%s\n' "${dns_addresses[@]+"${dns_addresses[@]}"}" | jq -R . | jq -s .)" \
+    --argjson tcp_ok "$tcp_ok" \
+    --arg tcp_latency "${tcp_latency:-null}" \
+    --arg http_status "${http_status:-null}" \
+    --arg http_url "${http_url:-null}" \
+    --arg status "$overall" \
+    '{
+      service: $svc,
+      found: true,
+      host: $host,
+      port: (if $port == "null" then null else $port end),
+      source: $source,
+      status: $status,
+      dns: {resolved: $dns_ok, addresses: $dns_addrs},
+      tcp: {connected: $tcp_ok, latency: (if $tcp_latency == "null" then null else $tcp_latency end)},
+      http: {status: (if $http_status == "null" then null else ($http_status | tonumber) end), url: (if $http_url == "null" then null else $http_url end)}
+    }'
+else
+  echo "Service: $SERVICE"
+  echo "Host:    $host (source: $source_type)"
+  echo "Port:    ${port:-n/a}"
+  echo "Status:  $overall"
+  echo ""
+  echo "DNS:     $(if "$dns_ok"; then echo "OK (${dns_addresses[*]+"${dns_addresses[*]}"})"; else echo "FAILED"; fi)"
+  if [[ -n "$port" ]]; then
+    echo "TCP:     $(if "$tcp_ok"; then echo "OK (${tcp_latency})"; else echo "FAILED"; fi)"
+  fi
+  if [[ -n "$http_status" ]]; then
+    echo "HTTP:    ${http_status} (${http_url})"
+  fi
+fi
+
+if [[ "$overall" == "unreachable" ]]; then exit 1; fi

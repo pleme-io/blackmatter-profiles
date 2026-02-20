@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# kenv — list all Kubernetes-injected environment variables, grouped by category
+set -euo pipefail
+
+JSON=false
+for arg in "$@"; do
+  case "$arg" in
+    --json) JSON=true ;;
+    -h|--help)
+      echo "Usage: kenv [--json]"
+      echo "List Kubernetes-injected environment variables grouped by category."
+      exit 0
+      ;;
+    *) echo "Unknown option: $arg" >&2; exit 1 ;;
+  esac
+done
+
+# Collect env vars into categories
+downward_api=()
+service_discovery=()
+k8s_system=()
+
+while IFS='=' read -r key value; do
+  case "$key" in
+    POD_NAME|POD_NAMESPACE|POD_IP|POD_SERVICE_ACCOUNT|NODE_NAME|POD_UID)
+      downward_api+=("${key}=${value}") ;;
+    KUBERNETES_SERVICE_HOST|KUBERNETES_SERVICE_PORT|KUBERNETES_SERVICE_PORT_HTTPS|KUBERNETES_PORT|KUBERNETES_PORT_*)
+      k8s_system+=("${key}=${value}") ;;
+    *_SERVICE_HOST|*_SERVICE_PORT|*_SERVICE_PORT_*|*_PORT|*_PORT_*)
+      service_discovery+=("${key}=${value}") ;;
+  esac
+done < <(env | sort)
+
+if "$JSON"; then
+  # Build JSON object with jq
+  {
+    echo '{'
+    echo '"downward_api": {'
+    first=true
+    for entry in "${downward_api[@]+"${downward_api[@]}"}"; do
+      key="${entry%%=*}"
+      value="${entry#*=}"
+      if "$first"; then first=false; else echo ','; fi
+      printf '  %s: %s' "$(echo "$key" | jq -R .)" "$(echo "$value" | jq -R .)"
+    done
+    echo
+    echo '},'
+    echo '"service_discovery": {'
+    first=true
+    for entry in "${service_discovery[@]+"${service_discovery[@]}"}"; do
+      key="${entry%%=*}"
+      value="${entry#*=}"
+      if "$first"; then first=false; else echo ','; fi
+      printf '  %s: %s' "$(echo "$key" | jq -R .)" "$(echo "$value" | jq -R .)"
+    done
+    echo
+    echo '},'
+    echo '"kubernetes_system": {'
+    first=true
+    for entry in "${k8s_system[@]+"${k8s_system[@]}"}"; do
+      key="${entry%%=*}"
+      value="${entry#*=}"
+      if "$first"; then first=false; else echo ','; fi
+      printf '  %s: %s' "$(echo "$key" | jq -R .)" "$(echo "$value" | jq -R .)"
+    done
+    echo
+    echo '}'
+    echo '}'
+  } | jq .
+else
+  echo "=== Downward API ==="
+  if [[ ${#downward_api[@]} -eq 0 ]]; then
+    echo "  (none — set POD_NAME etc. via downward API in pod spec)"
+  else
+    for entry in "${downward_api[@]}"; do
+      printf "  %-25s %s\n" "${entry%%=*}" "${entry#*=}"
+    done
+  fi
+  echo
+  echo "=== Kubernetes System ==="
+  if [[ ${#k8s_system[@]} -eq 0 ]]; then
+    echo "  (none — not running in Kubernetes?)"
+  else
+    for entry in "${k8s_system[@]}"; do
+      printf "  %-45s %s\n" "${entry%%=*}" "${entry#*=}"
+    done
+  fi
+  echo
+  echo "=== Service Discovery ==="
+  if [[ ${#service_discovery[@]} -eq 0 ]]; then
+    echo "  (none)"
+  else
+    for entry in "${service_discovery[@]}"; do
+      printf "  %-45s %s\n" "${entry%%=*}" "${entry#*=}"
+    done
+  fi
+fi

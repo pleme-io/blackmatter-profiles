@@ -53,15 +53,16 @@ pkgs.dockerTools.buildLayeredImage {
     mkdir -p root tmp
     chmod 1777 tmp
 
-    # /bin symlinks so tooling that hardcodes /bin/bash or /bin/sh works
+    # /bin symlinks so tooling that hardcodes /bin/bash or /bin/sh works.
+    # Use -sf because buildLayeredImage content merger may create these first.
     mkdir -p bin
-    ln -s ${pkgs.bashInteractive}/bin/bash bin/bash
-    ln -s ${pkgs.bashInteractive}/bin/bash bin/sh
-    ln -s ${blzsh}/bin/blzsh bin/blzsh
+    ln -sf ${pkgs.bashInteractive}/bin/bash bin/bash
+    ln -sf ${pkgs.bashInteractive}/bin/bash bin/sh
+    ln -sf ${blzsh}/bin/blzsh bin/blzsh
 
     # /usr/bin/env is required by many shebang lines
     mkdir -p usr/bin
-    ln -s ${pkgs.coreutils}/bin/env usr/bin/env
+    ln -sf ${pkgs.coreutils}/bin/env usr/bin/env
 
     ${extraCommands}
   '';

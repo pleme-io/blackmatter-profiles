@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# kdiag — full Kubernetes diagnostic suite (always JSON output, agent-first)
+set -euo pipefail
+
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      echo "Usage: kdiag"
+      echo "Run full Kubernetes diagnostic suite. Output is always JSON."
+      echo ""
+      echo "Checks: identity, DNS, API server, discovered services, network interfaces."
+      echo "Exit codes: 0=all checks passed, 1=one or more checks failed."
+      exit 0
+      ;;
+    *) echo "Unknown option: $arg" >&2; exit 1 ;;
+  esac
+done
+
+SA_DIR="/var/run/secrets/kubernetes.io/serviceaccount"
+has_failures=false
+
+# --- Identity ---
+pod_name="${POD_NAME:-unknown}"
+pod_namespace="${POD_NAMESPACE:-}"
+node_name="${NODE_NAME:-unknown}"
+pod_ip="${POD_IP:-unknown}"
+
+# Try to read namespace from service account if not in env
+if [[ -z "$pod_namespace" && -f "${SA_DIR}/namespace" ]]; then
+  pod_namespace="$(cat "${SA_DIR}/namespace")"
+fi
+pod_namespace="${pod_namespace:-unknown}"
+
+sa_token_present=false
+sa_ca_present=false
+if [[ -f "${SA_DIR}/token" ]]; then sa_token_present=true; fi
+if [[ -f "${SA_DIR}/ca.crt" ]]; then sa_ca_present=true; fi
+
+identity_json="$(jq -n \
+  --arg pod "$pod_name" \
+  --arg ns "$pod_namespace" \
+  --arg node "$node_name" \
+  --arg ip "$pod_ip" \
+  --argjson sa_token "$sa_token_present" \
+  --argjson sa_ca "$sa_ca_present" \
+  '{pod: $pod, namespace: $ns, node: $node, pod_ip: $ip, service_account: {token_present: $sa_token, ca_present: $sa_ca}}')"
+
+# --- DNS ---
+dns_k8s_ok=false
+dns_k8s_ip=""
+dns_external_ok=false
+
+if dns_result="$(dig +short +time=3 +tries=1 kubernetes.default.svc.cluster.local 2>/dev/null)"; then
+  if [[ -n "$dns_result" ]]; then
+    dns_k8s_ok=true
+    dns_k8s_ip="$(echo "$dns_result" | head -1)"
+  fi
+fi
+
+if dig +short +time=3 +tries=1 dns.google 2>/dev/null | grep -q '^[0-9]'; then
+  dns_external_ok=true
+fi
+
+if ! "$dns_k8s_ok"; then has_failures=true; fi
+
+dns_json="$(jq -n \
+  --argjson k8s_ok "$dns_k8s_ok" \
+  --arg k8s_ip "$dns_k8s_ip" \
+  --argjson external_ok "$dns_external_ok" \
+  '{kubernetes_svc: {resolved: $k8s_ok, ip: (if $k8s_ip == "" then null else $k8s_ip end)}, external: {resolved: $external_ok}}')"
+
+# --- API Server ---
+api_host="${KUBERNETES_SERVICE_HOST:-}"
+api_port="${KUBERNETES_SERVICE_PORT:-443}"
+api_reachable=false
+api_authenticated=false
+api_status=""
+api_error=""
+
+if [[ -n "$api_host" ]]; then
+  api_url="https://${api_host}:${api_port}"
+
+  # TCP check first
+  if nc -z -w 3 "$api_host" "$api_port" 2>/dev/null; then
+    api_reachable=true
+  fi
+
+  # Healthz check with SA token
+  if "$api_reachable" && [[ -f "${SA_DIR}/token" && -f "${SA_DIR}/ca.crt" ]]; then
+    token="$(cat "${SA_DIR}/token")"
+    http_code="$(curl -s -o /dev/null -w '%{http_code}' \
+      --max-time 5 \
+      --cacert "${SA_DIR}/ca.crt" \
+      -H "Authorization: Bearer ${token}" \
+      "${api_url}/healthz" 2>/dev/null || echo "000")"
+    if [[ "$http_code" == "200" ]]; then
+      api_authenticated=true
+      api_status="healthy"
+    elif [[ "$http_code" == "401" || "$http_code" == "403" ]]; then
+      api_status="auth_failed"
+      api_error="HTTP ${http_code}"
+    else
+      api_status="error"
+      api_error="HTTP ${http_code}"
+    fi
+  elif "$api_reachable"; then
+    api_status="no_credentials"
+    api_error="Service account token or CA not found"
+  fi
+else
+  api_status="not_in_cluster"
+  api_error="KUBERNETES_SERVICE_HOST not set"
+  has_failures=true
+fi
+
+if ! "$api_reachable" && [[ -n "$api_host" ]]; then has_failures=true; fi
+
+api_json="$(jq -n \
+  --arg host "${api_host:-null}" \
+  --arg port "$api_port" \
+  --argjson reachable "$api_reachable" \
+  --argjson authenticated "$api_authenticated" \
+  --arg status "$api_status" \
+  --arg error "$api_error" \
+  '{host: (if $host == "null" then null else $host end), port: $port, reachable: $reachable, authenticated: $authenticated, status: $status, error: (if $error == "" then null else $error end)}')"
+
+# --- Services ---
+services_json="$(kservices --json)"
+
+# Test reachability of each discovered service (TCP probe with 2s timeout)
+services_checked="$(echo "$services_json" | jq -c '.[]' 2>/dev/null | while IFS= read -r svc; do
+  host="$(echo "$svc" | jq -r '.host')"
+  port="$(echo "$svc" | jq -r '.port // empty')"
+  if [[ -n "$port" && -n "$host" ]]; then
+    if nc -z -w 2 "$host" "$port" 2>/dev/null; then
+      echo "$svc" | jq -c '. + {reachable: true}'
+    else
+      echo "$svc" | jq -c '. + {reachable: false}'
+    fi
+  else
+    echo "$svc" | jq -c '. + {reachable: null}'
+  fi
+done | jq -s '.')"
+
+# Handle empty result
+services_checked="${services_checked:-[]}"
+
+# --- Network Interfaces ---
+interfaces_json="$(ip -j addr show 2>/dev/null | jq '[.[] | {name: .ifname, state: .operstate, addresses: [.addr_info[] | {family: .family, address: .local, prefix: .prefixlen}]}]' 2>/dev/null || echo '[]')"
+
+# --- Assemble final output ---
+jq -n \
+  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --argjson identity "$identity_json" \
+  --argjson dns "$dns_json" \
+  --argjson api "$api_json" \
+  --argjson services "$services_checked" \
+  --argjson interfaces "$interfaces_json" \
+  --argjson has_failures "$has_failures" \
+  '{
+    timestamp: $ts,
+    status: (if $has_failures then "degraded" else "healthy" end),
+    identity: $identity,
+    dns: $dns,
+    api_server: $api,
+    services: $services,
+    network_interfaces: $interfaces
+  }'
+
+if "$has_failures"; then exit 1; fi

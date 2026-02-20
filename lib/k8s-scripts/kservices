@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# kservices — parse *_SERVICE_HOST/*_SERVICE_PORT env vars into a service map
+set -euo pipefail
+
+JSON=false
+for arg in "$@"; do
+  case "$arg" in
+    --json) JSON=true ;;
+    -h|--help)
+      echo "Usage: kservices [--json]"
+      echo "Parse Kubernetes service discovery env vars into a service map."
+      exit 0
+      ;;
+    *) echo "Unknown option: $arg" >&2; exit 1 ;;
+  esac
+done
+
+# Collect unique service names from *_SERVICE_HOST vars
+declare -A hosts
+declare -A ports
+
+while IFS='=' read -r key value; do
+  if [[ "$key" == *_SERVICE_HOST ]]; then
+    svc_name="${key%_SERVICE_HOST}"
+    hosts["$svc_name"]="$value"
+  elif [[ "$key" == *_SERVICE_PORT && "$key" != *_SERVICE_PORT_* ]]; then
+    svc_name="${key%_SERVICE_PORT}"
+    ports["$svc_name"]="$value"
+  fi
+done < <(env | sort)
+
+# Build sorted list of service names
+mapfile -t svc_names < <(printf '%s\n' "${!hosts[@]}" | sort)
+
+if [[ ${#svc_names[@]} -eq 0 ]]; then
+  if "$JSON"; then
+    echo '[]'
+  else
+    echo "No Kubernetes services discovered in environment."
+    echo "This container may not be running in a Kubernetes pod,"
+    echo "or service environment variables are disabled."
+  fi
+  exit 0
+fi
+
+if "$JSON"; then
+  jq -n --argjson count "${#svc_names[@]}" '[]' | {
+    arr="["
+    first=true
+    for svc in "${svc_names[@]}"; do
+      host="${hosts[$svc]:-}"
+      port="${ports[$svc]:-}"
+      # Convert env var name to lowercase with dashes for readability
+      display_name="$(echo "$svc" | tr '[:upper:]_' '[:lower:]-')"
+      if "$first"; then first=false; else arr+=","; fi
+      arr+="$(jq -n \
+        --arg name "$display_name" \
+        --arg env_prefix "$svc" \
+        --arg host "$host" \
+        --arg port "$port" \
+        '{name: $name, env_prefix: $env_prefix, host: $host, port: ($port | if . == "" then null else . end)}')"
+    done
+    arr+="]"
+    echo "$arr" | jq .
+  }
+else
+  printf "%-35s %-20s %s\n" "SERVICE" "HOST" "PORT"
+  printf "%-35s %-20s %s\n" "-------" "----" "----"
+  for svc in "${svc_names[@]}"; do
+    host="${hosts[$svc]:-}"
+    port="${ports[$svc]:-n/a}"
+    display_name="$(echo "$svc" | tr '[:upper:]_' '[:lower:]-')"
+    printf "%-35s %-20s %s\n" "$display_name" "$host" "$port"
+  done
+  echo
+  echo "${#svc_names[@]} service(s) discovered"
+fi
