@@ -84,6 +84,6 @@ fi
 
 # --- Quick tool summary ---
 echo ""
-echo -e "  ${BOLD}Tools:${RESET}      ${DIM}kdiag kcheck kservices kenv${RESET}"
+echo -e "  ${BOLD}Tools:${RESET}      ${DIM}kdiag kcheck kservices kenv umbra-agent${RESET}"
 echo -e "  ${BOLD}Packages:${RESET}   ${DIM}kubectl helm flux k9s stern dig nmap tcpdump strace psql${RESET}"
 echo ""

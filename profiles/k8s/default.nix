@@ -20,7 +20,7 @@
 #
 #   # Check a specific service
 #   kubectl exec <pod> -c debug -- kcheck redis --json
-{ pkgs, lib, blzsh }:
+{ pkgs, lib, blzsh, umbra-agent, ... }:
 let
   mkImage = import ../../lib/base-image.nix { inherit pkgs lib blzsh; };
   k8sScripts = import ../../lib/k8s-scripts.nix { inherit pkgs; };
@@ -66,12 +66,27 @@ mkImage {
     grpcurl
     websocat
 
+    # --- Security scanning ---
+    rustscan        # fast all-ports discovery
+    feroxbuster     # recursive web content discovery
+    testssl         # TLS vulnerability analysis
+    nuclei          # template-based CVE scanning
+    noseyparker     # secret/credential detection
+    jwt-cli         # JWT token analysis
+    oha             # HTTP load testing
+    legba           # multi-protocol credential testing
+    trivy           # container CVE scanning
+    httpx           # HTTP tech fingerprinting
+
     # --- Data processing ---
     jq
     yq-go
 
     # --- Diagnostic scripts ---
     k8sScripts
+
+    # --- Umbra agent (MCP-based diagnostics) ---
+    umbra-agent
   ];
   extraEnv = [
     "KUBECONFIG=/root/.kube/config"
@@ -88,6 +103,6 @@ fi
 EOF
   '';
   extraLabels = {
-    "org.opencontainers.image.description" = "Blackmatter K8s debug environment — full diagnostic toolkit + agent-ready structured output";
+    "org.opencontainers.image.description" = "Blackmatter K8s debug environment — diagnostics + security scanning + Umbra MCP agent";
   };
 }

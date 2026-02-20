@@ -14,11 +14,17 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.blackmatter-nvim.follows = "blackmatter-nvim";
     };
+
+    umbra = {
+      url = "github:pleme-io/umbra";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
     nixpkgs,
     blackmatter-shell,
+    umbra,
     ...
   }: let
     # OCI images are always Linux; release scripts run on any system
@@ -32,6 +38,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
         lib = nixpkgs.lib;
         blzsh = blackmatter-shell.packages.${system}.blzsh;
+        umbra-agent = umbra.packages.${system}.umbra-agent;
       };
 
     # Registry names for each profile
