@@ -27,15 +27,6 @@
     forLinux = f: nixpkgs.lib.genAttrs linuxSystems (system: f system nixpkgs.legacyPackages.${system});
     forAll = f: nixpkgs.lib.genAttrs allSystems (system: f system nixpkgs.legacyPackages.${system});
 
-    # Map host system → container target (darwin hosts build linux images)
-    containerSystem = system:
-      {
-        "aarch64-darwin" = "aarch64-linux";
-        "x86_64-darwin" = "x86_64-linux";
-      }.${
-        system
-      } or system;
-
     mkProfile = name: system:
       import ./profiles/${name} {
         pkgs = nixpkgs.legacyPackages.${system};
@@ -49,17 +40,31 @@
       k8s = "ghcr.io/pleme-io/blackmatter-k8s";
     };
 
-    # Release script: host tools (skopeo/git) from hostPkgs, image built for linux
-    mkReleaseScript = hostPkgs: targetSystem: name: let
-      image = mkProfile name targetSystem;
+    # Map nix system → OCI architecture tag
+    archTag = system: {
+      "x86_64-linux" = "amd64";
+      "aarch64-linux" = "arm64";
+    }.${system};
+
+    # Release script: builds + pushes both amd64 and arm64 images to GHCR
+    # Tags: <arch>-<sha>, <arch>-latest (matches substrate convention)
+    mkReleaseScript = hostPkgs: name: let
       registry = profileRegistry.${name};
+      pushArch = targetSystem: let
+        image = mkProfile name targetSystem;
+        arch = archTag targetSystem;
+      in ''
+        echo "==> Pushing ${registry}:${arch}-$SHORT_SHA"
+        ${hostPkgs.skopeo}/bin/skopeo copy docker-archive:${image} docker://${registry}:${arch}-$SHORT_SHA
+        ${hostPkgs.skopeo}/bin/skopeo copy docker-archive:${image} docker://${registry}:${arch}-latest
+      '';
     in
       hostPkgs.writeShellScript "release-${name}" ''
         set -euo pipefail
         SHORT_SHA=$(${hostPkgs.git}/bin/git rev-parse --short HEAD)
-        echo "==> Releasing ${registry} (latest + $SHORT_SHA)"
-        ${hostPkgs.skopeo}/bin/skopeo copy docker-archive:${image} docker://${registry}:latest
-        ${hostPkgs.skopeo}/bin/skopeo copy docker-archive:${image} docker://${registry}:$SHORT_SHA
+        echo "==> Releasing ${registry}"
+        ${pushArch "x86_64-linux"}
+        ${pushArch "aarch64-linux"}
         echo "==> Done: ${registry}"
       '';
   in {
@@ -77,23 +82,21 @@
     # Usage: nix run .#release          (all profiles)
     #        nix run .#release:debug    (debug only)
     #        nix run .#release:k8s      (k8s only)
-    apps = forAll (system: pkgs: let
-      target = containerSystem system;
-    in {
+    apps = forAll (system: pkgs: {
       "release:debug" = {
         type = "app";
-        program = toString (mkReleaseScript pkgs target "debug");
+        program = toString (mkReleaseScript pkgs "debug");
       };
       "release:k8s" = {
         type = "app";
-        program = toString (mkReleaseScript pkgs target "k8s");
+        program = toString (mkReleaseScript pkgs "k8s");
       };
       release = {
         type = "app";
         program = toString (pkgs.writeShellScript "release-all" ''
           set -euo pipefail
-          ${mkReleaseScript pkgs target "debug"}
-          ${mkReleaseScript pkgs target "k8s"}
+          ${mkReleaseScript pkgs "debug"}
+          ${mkReleaseScript pkgs "k8s"}
         '');
       };
     });
